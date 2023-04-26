@@ -1,9 +1,17 @@
 // --- NPM packs
 const express = require('express');
-const app = express();
+
 const mongoose = require("mongoose");
 const https = require('https')
 const axios = require('axios');
+const morgan = require('morgan');
+const bodyParser = require('body-parser')
+const cors = require('cors')
+const MongoStore = require('connect-mongo');
+const session = require('express-session');
+const flash = require('req-flash');
+const passport = require('passport');
+const app = express();
 
 // --- Mongo Connection
 mongoose.connect(
@@ -14,11 +22,53 @@ mongoose.connect(
     }
 )
 
+app.use(
+    cors({
+        origin: 'http://localhost:4001',
+        credentials: true
+    })
+)
+
+app.use(express.json());
+
+app.set('trust proxy', 1);
+
+app.use(
+    session({
+        cookie: process.env.DEVELOPMENT
+            ? null
+            : {
+                secure: true,
+                sameSite: 'none',
+                maxAge: 4 * 60 * 60 * 1000
+            },
+        secret: process.env.SECRET,
+        resave: false,
+        saveUninitialized: false,
+        store: process.env.PORT
+            ? MongoStore.create(
+                {
+                    mongoUrl: "mongodb+srv://code4all:code4all@cluster0.kin8f.mongodb.net/livraria?retryWrites=true&w=majority",
+                },
+                (err, resposta) => {
+                    console.log(err || resposta)
+                }
+            )
+            : null
+    })
+)
+
+app.use(passport.initialize())
+app.use(passport.session())
+
 // --- Collections
 const Branch = require('./models/Branches');
 const User = require('./models/Users');
 const { json } = require('express');
 
+passport.use(User.createStrategy());
+passport.serializeUser(User.serializeUser());
+passport.deserializeUser(User.deserializeUser());
 // --- Rotas
 
 let defaultBook = {
@@ -34,7 +84,6 @@ let defaultBook = {
 
 let BooksSchema = new mongoose.Schema(defaultBook)
 const Book = mongoose.model('Book', BooksSchema)
-
 app.get(
     '/clock',
     (req, res) => {
@@ -150,25 +199,142 @@ app.get('/testeCript', (req, res) => {
 })
 
 app.get('/createUser', (req, res) => {
-    let password = req.query.password;
 
-
-
-    let newObj = new User({
+    User.register({
         name: req.query.name,
         cpf: req.query.cpf,
         branch: req.query.branch,
         manager: req.query.manager,
+    },
+        req.query.password,
+        (err, saved) => {
+            if (err) {
+                console.log(err)
+            } else if (!saved) {
+                res.send({ status: false, msg: 'Erro no cadastro' })
+            } else {
+                res.send({
+                    status: true,
+                    msg: 'usuário cadastrado com sucesso!',
+                    data: saved
+                })
+            }
+        })
+})
 
-    })
-    newObj.save((err, objSaved) => {
+app.get('/login', (req, res, next) => {
+    passport.authenticate('local', (err, user) => {
         if (err) {
-            console.log(err);
-            res.send(false)
+            console.log(err)
+        } else if (!user) {
+            res.send({
+                status: false,
+                msg: 'Erro no login'
+            })
         } else {
-            res.send("Objeto criado com sucesso!")
+            req.logIn(user, (err2, user2) => {
+                if (err2) {
+                    console.log(err2)
+                } else if (!user2) {
+                    res.send({
+                        status: false,
+                        msg: 'Erro no login'
+                    })
+                } else {
+                    res.send({
+                        status: true,
+                        msg: 'usuário cadastrado com sucesso!',
+                        data: req.user
+                    })
+                }
+            })
+        }
+    })(req, res, next)
+})
+app.get('/updateuser2', (req, res) => {
+
+    console.log(req.query)
+
+    User.findById(req.query.idt, (err, found) => {
+        if (err) {
+            console.log({ status: false, mensagem: `Erro ao buscar user` })
+        } else if (!found) {
+            console.log({ status: false, mensagem: `Usuário não encontrado` })
+        } else {
+            console.log({ status: true, mensagem: `Usuário encontrado` })
         }
     })
+
+    User.findByIdAndUpdate(req.query.idt, { name: req.query.name }, { multi: true }, (err, updated) => {
+        if (err) {
+            console.log(err);
+            res.send({ status: false, mensagem: "Erro ao atualizar usuário" })
+        } else {
+
+            res.send({ status: true, mensagem: `Usuário atualizado com sucesso. Agora suas props são ${updated}` })
+        }
+    }
+
+    )
+})
+
+app.get('/updateUser', (req, res) => {
+    if (req.isAuthenticated()) {
+        User.findByIdAndUpdate(
+            found._id,
+            {
+                name: req.query.name,
+                cpf: req.query.cpf,
+                branch: req.query.branch,
+                manager: req.query.manager,
+            },
+            { multi: true },
+            function (err, userUpdated) {
+                if (err) {
+                    console.log("O usuário não foi atualizado");
+                    res.send({
+                        erro: true,
+                        mensagem: 'Usuário não atualizado',
+                    });
+                } else {
+                    if (req.body.password) {
+                        userUpdated.setPassword(
+                            req.body.password,
+                            (err, userUpdated) => {
+                                if (err) {
+                                    console.log(err);
+                                    res.send({
+                                        erro: true,
+                                        mensagem: 'Erro ao atualizar a senha',
+                                    });
+                                } else {
+                                    userUpdated.save();
+                                    res.send(userUpdated);
+                                    console.log(
+                                        "O Usuário e senha foram atualizados com Sucesso!!"
+                                    );
+                                }
+                            }
+                        );
+                    } else {
+                        res.send(userUpdated);
+                        console.log(
+                            "O Usuário foi atualizado com Sucesso!!"
+                        );
+                    }
+                }
+            }
+        )
+    } else {
+        res.send(
+            {
+                status: false,
+                msg: "user not authenticated",
+                route: '/login' // -> if(!res.data.status) { window.location(req.data.route)}
+            }
+        )
+    }
+
 })
 
 
